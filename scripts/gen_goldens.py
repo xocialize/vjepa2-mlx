@@ -67,6 +67,16 @@ def main() -> None:
         g["layer11"] = caps["l11"]
         g["encoder_last_hidden"] = out.numpy()
 
+        # --- predictor (P4): synthetic context/target masks ---
+        Ntok = out.shape[1]
+        n_ctx = 3 * Ntok // 4
+        ctx = [torch.arange(0, n_ctx).unsqueeze(0)]
+        tgt = [torch.arange(n_ctx, Ntok).unsqueeze(0)]
+        pred = model.predictor(out, ctx, tgt).last_hidden_state
+        g["pred_context_mask"] = ctx[0].numpy().astype(np.int64)
+        g["pred_target_mask"] = tgt[0].numpy().astype(np.int64)
+        g["predictor_out"] = pred.numpy()
+
     np.savez(os.path.join(OUT, "vitl-encoder.npz"), **g)
     print("OK goldens/vitl-encoder.npz:")
     for k, v in g.items():

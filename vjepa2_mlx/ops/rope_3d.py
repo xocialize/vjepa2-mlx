@@ -19,11 +19,11 @@ import mlx.core as mx
 
 
 def rotate_queries_or_keys(x: mx.array, pos: mx.array) -> mx.array:
-    """x: [..., N, D]; pos: [N] (int). Returns [..., N, D]."""
+    """x: [..., N, D]; pos: [N] (encoder) or [B, 1, N] (predictor masks)."""
     D = x.shape[-1]
     omega = mx.arange(D // 2).astype(mx.float32) / (D / 2.0)
     omega = 1.0 / (10000.0**omega)                      # [D/2]
-    freq = pos.astype(mx.float32)[:, None] * omega[None, :]   # [N, D/2]
+    freq = pos.astype(mx.float32)[..., None] * omega    # [..., N, D/2]
     emb_sin = mx.concatenate([mx.sin(freq), mx.sin(freq)], axis=-1)  # [N, D]
     emb_cos = mx.concatenate([mx.cos(freq), mx.cos(freq)], axis=-1)  # [N, D]
 
@@ -48,10 +48,18 @@ def apply_rotary_embeddings(qk: mx.array, pos_ids, dims=(20, 20, 20)) -> mx.arra
     return mx.concatenate(parts, axis=-1)
 
 
-def get_position_ids(num_tokens: int, grid_size: int = 16):
-    """Decompose flattened token index over (depth, height, width). Matches
-    upstream get_position_ids with masks=None (config grid_size, not input)."""
-    ids = mx.arange(num_tokens)
+def get_position_ids(num_tokens: int | None = None, grid_size: int = 16, masks=None):
+    """Decompose token index over (depth, height, width) using config grid_size.
+
+    Encoder: masks=None -> ids = arange(num_tokens), returns [N] each.
+    Predictor: masks = position_masks [B, N] (actual token indices to keep) ->
+    returns [B, 1, N] each (broadcast over heads), matching upstream
+    masks.unsqueeze(1).repeat(1, num_heads, 1) up to the redundant head repeat.
+    """
+    if masks is None:
+        ids = mx.arange(num_tokens)
+    else:
+        ids = masks[:, None, :]
     tpf = grid_size * grid_size
     frame = ids // tpf
     height = (ids - tpf * frame) // grid_size

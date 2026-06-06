@@ -43,7 +43,7 @@ class VJEPA2RopeAttention(nn.Module):
         self.value = nn.Linear(hidden_size, hidden_size, bias=config.qkv_bias)
         self.proj = nn.Linear(hidden_size, hidden_size)
 
-    def __call__(self, x):
+    def __call__(self, x, position_mask=None):
         B, N, _ = x.shape
 
         def split(t):
@@ -53,7 +53,10 @@ class VJEPA2RopeAttention(nn.Module):
         k = split(self.key(x))
         v = split(self.value(x))
 
-        pos = get_position_ids(N, grid_size=self.grid_size)
+        if position_mask is None:
+            pos = get_position_ids(N, grid_size=self.grid_size)
+        else:
+            pos = get_position_ids(grid_size=self.grid_size, masks=position_mask)
         k = apply_rotary_embeddings(k, pos, dims=self.dims)
         q = apply_rotary_embeddings(q, pos, dims=self.dims)
 
@@ -70,8 +73,8 @@ class VJEPA2Layer(nn.Module):
         self.norm2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_eps)
         self.mlp = VJEPA2MLP(config, hidden_size, mlp_ratio)
 
-    def __call__(self, x):
-        x = x + self.attention(self.norm1(x))
+    def __call__(self, x, position_mask=None):
+        x = x + self.attention(self.norm1(x), position_mask=position_mask)
         x = x + self.mlp(self.norm2(x))
         return x
 
@@ -121,15 +124,79 @@ class VJEPA2Model(nn.Module):
         return self.encoder(video_btchw)
 
 
-# --- P4 stubs ---------------------------------------------------------------
+# --- Predictor (JEPA latent prediction) -------------------------------------
+
+def apply_masks(tensor: mx.array, masks: list) -> mx.array:
+    """tensor [B,N,D]; masks list of [B,n] index tensors. Gather + cat on batch."""
+    out = []
+    for mask in masks:
+        idx = mx.broadcast_to(mask[..., None], (mask.shape[0], mask.shape[1], tensor.shape[-1]))
+        out.append(mx.take_along_axis(tensor, idx, axis=1))
+    return mx.concatenate(out, axis=0)
+
+
+class VJEPA2PredictorEmbeddings(nn.Module):
+    def __init__(self, config: VJEPA2Config):
+        super().__init__()
+        self.predictor_embeddings = nn.Linear(config.hidden_size, config.pred_hidden_size)
+        self.num_mask_tokens = config.pred_num_mask_tokens
+        self.mask_tokens = mx.zeros((self.num_mask_tokens, 1, 1, config.pred_hidden_size))
+
+    def __call__(self, hidden_states, context_mask, target_mask, mask_index=1):
+        B = hidden_states.shape[0]
+        context = self.predictor_embeddings(hidden_states)
+        mask_index = mask_index % self.num_mask_tokens
+        target = self.mask_tokens[mask_index]                 # [1, 1, pred_hidden]
+        max_patch_num = int(target_mask[0].max().item()) + 1
+        target = mx.broadcast_to(target, (B, max_patch_num, target.shape[-1]))
+        target = apply_masks(target, target_mask)
+        context = mx.concatenate([context] * len(context_mask), axis=0)
+        embeddings = mx.concatenate([context, target], axis=1)
+        cm = mx.concatenate(list(context_mask), axis=0)
+        tm = mx.concatenate(list(target_mask), axis=0)
+        masks = mx.concatenate([cm, tm], axis=1)
+        return embeddings, masks
+
 
 class VJEPA2Predictor(nn.Module):
     def __init__(self, config: VJEPA2Config):
         super().__init__()
-        raise NotImplementedError("P4")
+        self.embeddings = VJEPA2PredictorEmbeddings(config)
+        self.layer = [
+            VJEPA2Layer(config, config.pred_hidden_size,
+                        config.pred_num_attention_heads, config.pred_mlp_ratio)
+            for _ in range(config.pred_num_hidden_layers)
+        ]
+        self.layernorm = nn.LayerNorm(config.pred_hidden_size, eps=config.layer_norm_eps)
+        self.proj = nn.Linear(config.pred_hidden_size, config.hidden_size)
+
+    @staticmethod
+    def _gather_rows(x, order):  # x [B,N,D], order [B,N] -> reordered rows
+        idx = mx.broadcast_to(order[..., None], (*order.shape, x.shape[-1]))
+        return mx.take_along_axis(x, idx, axis=1)
+
+    def __call__(self, encoder_hidden_states, context_mask, target_mask):
+        encoder_hidden_states = apply_masks(encoder_hidden_states, context_mask)
+        N_ctxt = encoder_hidden_states.shape[1]
+        hidden, position_masks = self.embeddings(encoder_hidden_states, context_mask, target_mask)
+
+        argsort = mx.argsort(position_masks, axis=1)
+        position_masks = mx.take_along_axis(position_masks, argsort, axis=1)
+        hidden = self._gather_rows(hidden, argsort)
+
+        for layer in self.layer:
+            hidden = layer(hidden, position_mask=position_masks)
+
+        hidden = self.layernorm(hidden)
+        reverse = mx.argsort(argsort, axis=1)
+        hidden = self._gather_rows(hidden, reverse)
+        hidden = hidden[:, N_ctxt:]
+        return self.proj(hidden)
 
 
 class VJEPA2AttentivePooler(nn.Module):
+    """Cross-attention pooling + linear classifier head. P4b (classifier ckpt)."""
+
     def __init__(self, config: VJEPA2Config):
         super().__init__()
-        raise NotImplementedError("P4")
+        raise NotImplementedError("P4b: needs a classification checkpoint (e.g. vitl-ssv2)")
