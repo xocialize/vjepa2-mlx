@@ -70,6 +70,35 @@ vjepa2-mlx -i clip.mp4 --task classify
 
 MIT (© Meta Platforms).
 """,
+    "V-JEPA2-AC-vitg": """---
+license: mit
+library_name: mlx
+pipeline_tag: video-classification
+tags: [mlx, video, vjepa2, world-model, action-conditioned, robotics, apple-silicon]
+---
+
+# V-JEPA2-AC ViT-g (MLX) — action-conditioned world-model
+
+Apple **MLX** fp16 port of Meta's **V-JEPA2-AC** (`vjepa2-ac-vitg`): a **ViT-g**
+video encoder + an **action-conditioned predictor** that, given encoder context
+tokens + per-frame 7-DoF robot poses (action/state), predicts future latent
+states — the world-model used for robot planning. MIT.
+
+```python
+from vjepa2_mlx.utils.weights import build_ac_encoder, build_ac_predictor
+enc = build_ac_encoder()          # ViT-g encoder (hidden 1408, 40 layers)
+pred = build_ac_predictor()       # AC predictor (frame-causal, 3D-RoPE)
+# tokens = enc(video); future = pred(tokens, actions, states)
+```
+
+- **Arch**: ViT-g encoder (1408 / 40 / 22 heads, GELU, 3D-RoPE) + AC predictor
+  (1024 / 24 / 16, fused-qkv ACRoPEAttention, frame-causal mask, 7-DoF action+state encoders).
+- **Parity vs upstream torch (cpu fp32)**: encoder rel 3.5e-5 · AC predictor rel 8.8e-6
+  (structural 8.9e-8). fp16: encoder rel 9.1e-3 · predictor 4.8e-4.
+- **Precision**: fp16 (~2.6 GB).
+
+MIT (© Meta Platforms). Converted from `vjepa2-ac-vitg.pt`.
+""",
 }
 
 
@@ -89,8 +118,9 @@ def publish(name: str) -> None:
 def main() -> None:
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     HfApi().whoami()
-    names = list(CARDS) if which == "all" else \
-        ["V-JEPA2-vitl-fpc64-256"] if which == "base" else ["V-JEPA2-vitl-fpc16-256-ssv2"]
+    table = {"base": "V-JEPA2-vitl-fpc64-256", "classifier": "V-JEPA2-vitl-fpc16-256-ssv2",
+             "ac": "V-JEPA2-AC-vitg"}
+    names = list(CARDS) if which == "all" else [table[which]]
     for n in names:
         publish(n)
 

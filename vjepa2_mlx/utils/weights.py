@@ -73,3 +73,27 @@ def build_predictor(weights_dir: str | None = None) -> VJEPA2Predictor:
 def build_classifier(weights_dir: str | None = None) -> VJEPA2ForVideoClassification:
     weights, cfg = _load(CLASSIFIER, weights_dir)
     return _finalize(VJEPA2ForVideoClassification(cfg), weights)
+
+
+AC = "V-JEPA2-AC-vitg"
+
+
+def build_ac_encoder(weights_dir: str | None = None) -> VJEPA2Model:
+    """ViT-g encoder from the action-conditioned world-model checkpoint."""
+    from dataclasses import replace
+    weights, cfg = _load(AC, weights_dir)
+    cfg = replace(cfg, hidden_size=1408, num_hidden_layers=40,
+                  num_attention_heads=22, mlp_ratio=48 / 11)
+    weights = {k: v for k, v in weights.items() if k.startswith("encoder.")}
+    return _finalize(VJEPA2Model(cfg), weights)
+
+
+def build_ac_predictor(weights_dir: str | None = None):
+    """Action-conditioned predictor (world-model) — ViT-g (embed 1408)."""
+    from ..models.ac_predictor import VisionTransformerPredictorAC
+    weights, _ = _load(AC, weights_dir)
+    weights = {k: v for k, v in weights.items() if not k.startswith("encoder.")}
+    m = VisionTransformerPredictorAC(img_size=(256, 256), embed_dim=1408,
+                                     predictor_embed_dim=1024, depth=24,
+                                     num_heads=16, mlp_ratio=4, eps=1e-6)
+    return _finalize(m, weights)
