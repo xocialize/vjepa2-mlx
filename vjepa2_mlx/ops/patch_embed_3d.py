@@ -1,8 +1,9 @@
 """3D tubelet patch embedding — MLX port of VJEPA2PatchEmbeddings3D.
 
-Conv3d with kernel = stride = (tubelet_size, patch_size, patch_size) over the
-video [N, T, H, W, C] (NDHWC in MLX), flattened to patch tokens. Images with
-T < tubelet_size are repeated along time (per VJEPA2Embeddings). Parity in P2.
+Conv3d kernel = stride = (tubelet, patch, patch). Upstream input is (B,T,C,H,W),
+permuted to (B,C,T,H,W) then Conv3d → flatten(2).transpose → (B, N, hidden) with
+token order depth·H'·W' (row-major). MLX Conv3d is NDHWC, so we feed (B,T,H,W,C)
+and reshape the (B,D',H',W',hidden) output to (B, D'·H'·W', hidden) — same order.
 
 PyTorch Conv3d weight (O,I,kT,kH,kW) -> MLX (O,kT,kH,kW,I).
 """
@@ -16,8 +17,16 @@ import mlx.nn as nn
 class PatchEmbed3D(nn.Module):
     def __init__(self, config):
         super().__init__()
-        raise NotImplementedError("P2/P3: nn.Conv3d(in_chans, hidden, "
-                                  "kernel=stride=(tubelet,patch,patch)) + flatten")
+        self.tubelet_size = config.tubelet_size
+        self.patch_size = config.patch_size
+        self.proj = nn.Conv3d(
+            config.in_chans, config.hidden_size,
+            kernel_size=(config.tubelet_size, config.patch_size, config.patch_size),
+            stride=(config.tubelet_size, config.patch_size, config.patch_size),
+        )
 
-    def __call__(self, pixel_values_videos: mx.array) -> mx.array:
-        raise NotImplementedError("P2/P3")
+    def __call__(self, video_bthwc: mx.array) -> mx.array:
+        """video_bthwc: [B, T, H, W, C] (frames repeated to >= tubelet upstream)."""
+        x = self.proj(video_bthwc)                 # [B, D', H', W', hidden]
+        B, D, H, W, C = x.shape
+        return x.reshape(B, D * H * W, C)          # [B, N, hidden]
