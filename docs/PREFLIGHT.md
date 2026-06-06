@@ -5,6 +5,8 @@
 **License:** MIT ✅ · **Tier:** 2 · **Started:** 2026-06-05
 **Reference:** HF `transformers/models/vjepa2/modeling_vjepa2.py` (authoritative) + `gaarutyunov/vjepa2-mlx` (secondary cross-check)
 
+> **STATUS (2026-06-05, PAUSED at P3):** P0–P3 done, **encoder parity-locked** — 3D-RoPE 2.4e-6, patch-embed 3.3e-5 (Gate A), full 24-layer encoder rel 2.66e-5 (Gate B). 10 tests. Educational/tradeshow-app port. Skill-worthy notes captured in `LESSONS.md`. Resume at **P4** (predictor + AC predictor + attentive pooler). See the memory file `vjepa2-mlx-port.md` for the authoritative tracker.
+
 ---
 
 ## CONFIRM gates (mlx-porting)
