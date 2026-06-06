@@ -16,7 +16,7 @@ from ..ops.rope_3d import apply_rotary_embeddings, get_position_ids
 
 
 class VJEPA2MLP(nn.Module):
-    def __init__(self, config: VJEPA2Config, hidden_size: int, mlp_ratio: float):
+    def __init__(self, config: VJEPA2Config, hidden_size: int, mlp_ratio: float = 4.0):
         super().__init__()
         hidden_features = int(hidden_size * mlp_ratio)
         self.fc1 = nn.Linear(hidden_size, hidden_features)
@@ -194,9 +194,107 @@ class VJEPA2Predictor(nn.Module):
         return self.proj(hidden)
 
 
-class VJEPA2AttentivePooler(nn.Module):
-    """Cross-attention pooling + linear classifier head. P4b (classifier ckpt)."""
+# --- Attentive pooler + classifier (classification checkpoints) -------------
+
+class VJEPA2PoolerSelfAttention(nn.Module):
+    def __init__(self, config: VJEPA2Config):
+        super().__init__()
+        self.num_heads = config.num_attention_heads
+        self.head_dim = config.hidden_size // self.num_heads
+        self.scale = self.head_dim**-0.5
+        self.q_proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.k_proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.v_proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.out_proj = nn.Linear(config.hidden_size, config.hidden_size)
+
+    def __call__(self, x):
+        B, N, _ = x.shape
+
+        def split(t):
+            return t.reshape(B, N, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
+
+        o = mx.fast.scaled_dot_product_attention(
+            split(self.q_proj(x)), split(self.k_proj(x)), split(self.v_proj(x)), scale=self.scale)
+        o = o.transpose(0, 2, 1, 3).reshape(B, N, self.num_heads * self.head_dim)
+        return self.out_proj(o)
+
+
+class VJEPA2PoolerCrossAttention(nn.Module):
+    """Cross-attention — no output projection (matches upstream)."""
 
     def __init__(self, config: VJEPA2Config):
         super().__init__()
-        raise NotImplementedError("P4b: needs a classification checkpoint (e.g. vitl-ssv2)")
+        self.num_heads = config.num_attention_heads
+        self.head_dim = config.hidden_size // self.num_heads
+        self.scale = self.head_dim**-0.5
+        self.q_proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.k_proj = nn.Linear(config.hidden_size, config.hidden_size)
+        self.v_proj = nn.Linear(config.hidden_size, config.hidden_size)
+
+    def __call__(self, queries, keys, values):
+        B, Q, E = queries.shape
+        Nkv = keys.shape[1]
+        q = self.q_proj(queries).reshape(B, Q, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
+        k = self.k_proj(keys).reshape(B, Nkv, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
+        v = self.v_proj(values).reshape(B, Nkv, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
+        o = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale)
+        return o.transpose(0, 2, 1, 3).reshape(B, Q, E)
+
+
+class VJEPA2PoolerSelfAttentionLayer(nn.Module):
+    def __init__(self, config: VJEPA2Config):
+        super().__init__()
+        self.layer_norm1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.self_attn = VJEPA2PoolerSelfAttention(config)
+        self.layer_norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.mlp = VJEPA2MLP(config, config.hidden_size)
+
+    def __call__(self, x):
+        x = x + self.self_attn(self.layer_norm1(x))
+        x = x + self.mlp(self.layer_norm2(x))
+        return x
+
+
+class VJEPA2PoolerCrossAttentionLayer(nn.Module):
+    def __init__(self, config: VJEPA2Config):
+        super().__init__()
+        self.layer_norm1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.cross_attn = VJEPA2PoolerCrossAttention(config)
+        self.layer_norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.mlp = VJEPA2MLP(config, config.hidden_size)
+
+    def __call__(self, queries, hidden_state):
+        h = self.layer_norm1(hidden_state)
+        x = queries + self.cross_attn(queries, h, h)
+        x = x + self.mlp(self.layer_norm2(x))
+        return x
+
+
+class VJEPA2AttentivePooler(nn.Module):
+    def __init__(self, config: VJEPA2Config):
+        super().__init__()
+        self.query_tokens = mx.zeros((1, 1, config.hidden_size))
+        self.cross_attention_layer = VJEPA2PoolerCrossAttentionLayer(config)
+        self.self_attention_layers = [
+            VJEPA2PoolerSelfAttentionLayer(config) for _ in range(config.num_pooler_layers)
+        ]
+
+    def __call__(self, hidden_state):
+        for layer in self.self_attention_layers:
+            hidden_state = layer(hidden_state)
+        B = hidden_state.shape[0]
+        queries = mx.broadcast_to(self.query_tokens, (B, 1, self.query_tokens.shape[-1]))
+        hidden_state = self.cross_attention_layer(queries, hidden_state)
+        return hidden_state[:, 0]
+
+
+class VJEPA2ForVideoClassification(nn.Module):
+    def __init__(self, config: VJEPA2Config):
+        super().__init__()
+        self.vjepa2 = VJEPA2Model(config)
+        self.pooler = VJEPA2AttentivePooler(config)
+        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+
+    def __call__(self, video_btchw):
+        h = self.vjepa2(video_btchw)
+        return self.classifier(self.pooler(h))

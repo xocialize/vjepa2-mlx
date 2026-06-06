@@ -35,6 +35,9 @@ class VJEPA2Config:
     pred_num_attention_heads: int = 12
     pred_mlp_ratio: float = 4.0
     pred_num_mask_tokens: int = 10
+    # --- attentive pooler / classifier (classification checkpoints) ---
+    num_pooler_layers: int = 3
+    num_labels: int = 174        # SSv2; overridden per classification checkpoint
     # --- provenance ---
     hf_repo: str = "facebook/vjepa2-vitl-fpc64-256"
 
