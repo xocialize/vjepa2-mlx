@@ -1,0 +1,30 @@
+[project]
+name = "vjepa2-mlx"
+version = "0.1.0"
+description = "Apple MLX port of Meta V-JEPA2 — video Joint-Embedding Predictive Architecture (ViT-L encoder + predictor, MIT)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "MVS Collective (xocialize)" }]
+dependencies = [
+    "mlx>=0.31",
+    "numpy",
+    "huggingface_hub",
+    "pillow",
+    "av",
+]
+
+[project.optional-dependencies]
+# DEV-only: torch + transformers for the parity oracle.
+parity = ["torch>=2.2", "transformers>=4.53"]
+dev = ["pytest"]
+
+[project.scripts]
+vjepa2-mlx = "vjepa2_mlx.pipeline_mlx:cli_main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["vjepa2_mlx", "vjepa2_mlx.models", "vjepa2_mlx.ops", "vjepa2_mlx.utils"]
