@@ -1,29 +1,68 @@
 # vjepa2-mlx
 
 Apple **MLX** port of Meta's [V-JEPA2](https://github.com/facebookresearch/vjepa2) —
-video **Joint-Embedding Predictive Architecture** (ViT-L encoder + predictor) for
-Apple Silicon. **MIT.**
+video **Joint-Embedding Predictive Architecture** (ViT-L/16) for Apple Silicon. **MIT.**
 
-Video/image embedding extraction (classification, retrieval, VLM features) plus the
-JEPA predictor / action-conditioned world-model, torch-free with HF auto-download.
+Torch-free video/image **embedding extraction** (retrieval, classification, VLM
+features), the **JEPA predictor** (masked latent-space world-model), and an **SSv2
+action classifier** — all parity-locked to the PyTorch reference and HF auto-downloaded.
 
-> **Status: P0 (scaffold).** Config pinned (ViT-L/16, 24 layers, 3D-tubelet patch
-> embed, 3D-RoPE). Op translation, parity, conversion, and the MLX-Swift port are
-> in progress. See [`docs/PREFLIGHT.md`](docs/PREFLIGHT.md).
+> **Status:** encoder + predictor + classifier ported & parity-locked; pipeline +
+> fp16 weights ready. Action-conditioned (AC/robotics) predictor is a documented
+> follow-up (separate ViT-g model, not in HF transformers). See [`docs/PREFLIGHT.md`](docs/PREFLIGHT.md).
 
-## Scope
+## Usage
 
-Full: **encoder** (embeddings) + **attentive-pooler/classifier** + **predictor** +
-**action-conditioned predictor** (world-model). Python-first (parity-verified +
-published `mlx-community` weights), then a net-new **MLX-Swift** on-device port.
+```bash
+pip install vjepa2-mlx
 
-## Why a port
+# video / image -> 1024-d embedding (.npy)
+vjepa2-mlx -i clip.mp4 --task embed -o emb.npy
 
-- The only prior MLX work (`gaarutyunov/vjepa2-mlx`) is experimental — no parity
-  claim, no published weights, **no Swift**.
-- The strategic target is **on-device Swift** video embedding (no impl exists);
-  this Python port is its parity oracle and the published-weights artifact.
+# SSv2 action classification (top-5)
+vjepa2-mlx -i clip.mp4 --task classify
+```
+
+```python
+from vjepa2_mlx.pipeline_mlx import embed_video
+emb = embed_video("clip.mp4", num_frames=16)   # (1024,) mean-pooled token embedding
+
+from vjepa2_mlx.utils.weights import build_predictor
+predictor = build_predictor()                  # JEPA latent-space world-model
+```
+
+Weights auto-download from `mlx-community/V-JEPA2-*` on first use.
+
+## Components & parity (vs PyTorch, mx.cpu fp32)
+
+| Component | Parity |
+|---|---|
+| 3D-tubelet Conv3d patch embed | 3.3e-5 |
+| 3D-RoPE (per-axis depth/H/W) | 2.4e-6 |
+| **ViT-L encoder** (24 layers) | rel 2.66e-5 |
+| **JEPA predictor** (masked) | rel 1.67e-6 |
+| **Attentive pooler + classifier** | logits rel 2.43e-6, argmax ✓ |
+
+Shipped **fp16** (~650 MB): encoder rel 4.7e-3, classifier argmax matches.
+
+## Benchmarks (M5 Max, fp16, GPU)
+
+| Task | Frames | Latency |
+|---|---|---|
+| encoder embed | 8 / 16 / 32 | 34 / 66 / 147 ms |
+| classify (SSv2) | 16 | 71 ms |
+
+See [`docs/REPORT.md`](docs/REPORT.md).
+
+## How it works
+
+ViT-L/16 with a **3D-tubelet** Conv3d patch embed and **3D-RoPE** (head_dim split
+across depth/height/width). The encoder, the masked JEPA predictor (mask tokens +
+context/target masks + position-mask-driven RoPE), and the attentive-pooler classifier
+are translated 1:1 from HF `transformers` and parity-locked. Two crux ops (3D-RoPE,
+3D-tubelet Conv3d) are hand-rolled in MLX — see [`docs/LESSONS.md`](docs/LESSONS.md).
 
 ## License
 
-MIT, inherited from upstream V-JEPA2 (© Meta Platforms).
+MIT, inherited from upstream V-JEPA2 (© Meta Platforms). Weights converted from the
+official `facebook/vjepa2-vitl-*` checkpoints.
